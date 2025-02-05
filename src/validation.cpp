@@ -350,6 +350,66 @@ bool DeadpoolClaimIsAnnounced(const CTransaction& tx,
     return true;
 }
 
+int64_t DeadpoolRescanAnnouncements(const CChain& chain,
+                                    CAnnounceDB* anndb,
+                                    const Consensus::Params& params,
+                                    const int32_t nTargetHeight)
+{
+    AssertLockHeld(cs_main);
+
+    // the minimum height of our window can never be lower than block 1, as
+    // genesis block outputs are invalid.
+    int64_t minHeight = std::max((int64_t)1, nTargetHeight - params.DeadpoolAnnounceMaxAge());
+
+    // the maximum height of our search window
+    // Do not consider nDeadpoolAnnounceMaturity to avoid rescanning too often
+    const int64_t maxHeight = nTargetHeight; // - params.nDeadpoolAnnounceMaturity
+
+    std::vector<CLocdAnnouncement> newAnnouncements = {};
+    for (int64_t height = minHeight; height <= maxHeight; height++) {
+        const CBlockIndex* pindex = chain[height];
+        if (!pindex) {
+            continue;
+        }
+
+        CBlock block;
+        if (!ReadBlockFromDisk(block, pindex, params)) {
+            continue;
+        }
+
+        for (unsigned int i = 0; i < block.vtx.size(); i++)
+        {
+            const CTransaction &tx = *(block.vtx[i]);
+
+            if (!tx.IsCoinBase())
+            {
+                // Prepare announcement indexing into announcedb for each non-coinbase tx
+                // do this regardless of activation state
+                ExtractAnnouncements(tx, pindex->nHeight, newAnnouncements);
+            }
+        }
+    }
+
+    // Write the announcements from the processed block(s) to the announcedb
+    // if this is not just a check if the block can be connected
+    // do this regardless of activation state
+    if (newAnnouncements.size() > 0) {
+        // Make sure the burn amount is higher than the minimum for this chain
+        for (auto it = newAnnouncements.begin(); it != newAnnouncements.end();) {
+            if (it->announcement.out.nValue < params.nDeadpoolAnnounceMinBurn) {
+                it = newAnnouncements.erase(it);
+            } else {
+                ++it;
+            }
+        }
+
+        // Add announcements to the announcedb
+        anndb->AddAnnouncements(newAnnouncements);
+    }
+
+    return newAnnouncements.size();
+}
+
 // Returns the script flags which should be checked for a given block
 static unsigned int GetBlockScriptFlags(const CBlockIndex* pindex, const Consensus::Params& chainparams);
 
@@ -1056,7 +1116,10 @@ bool MemPoolAccept::DeadpoolClaimChecks(const ATMPArgs& args, Workspace& ws)
   }
 
   if (!DeadpoolClaimIsAnnounced(tx, m_view, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height, state)) {
-      return false;
+      DeadpoolRescanAnnouncements(m_active_chainstate.m_chain, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height);
+      if (!DeadpoolClaimIsAnnounced(tx, m_view, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height, state)) {
+          return false;
+      }
   }
 
   return true;
@@ -2127,10 +2190,16 @@ bool CChainState::ConnectBlock(const CBlock& block, BlockValidationState& state,
             if (deadpool_active) {
                 // Check all non-coinbase transactions for deadpool claims and validate there has been an announcement
                 if (!DeadpoolClaimIsAnnounced(tx, view, m_announce_db.get(), m_params.GetConsensus(), pindex->nHeight+1, tx_state)) {
-                    state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
-                                  tx_state.GetRejectReason(), tx_state.GetDebugMessage());
-                    return error("ConnectBlock(): DeadpoolClaimChecks on %s failed with %s",
-                      tx.GetHash().ToString(), state.ToString());
+                    // Try scanning for announcements again
+                    int64_t rescanStartTime = GetTimeMicros();
+                    int64_t announcementsFound = DeadpoolRescanAnnouncements(m_chain, m_announce_db.get(), m_params.GetConsensus(), pindex->nHeight+1);
+                    LogPrint(BCLog::BENCH, "      - Rescanned deadpool announcements (%i found in %d ms)\n", announcementsFound, MILLI * (GetTimeMicros() - rescanStartTime));
+                    if (!DeadpoolClaimIsAnnounced(tx, view, m_announce_db.get(), m_params.GetConsensus(), pindex->nHeight+1, tx_state)) {
+                        state.Invalid(BlockValidationResult::BLOCK_CONSENSUS,
+                                    tx_state.GetRejectReason(), tx_state.GetDebugMessage());
+                        return error("ConnectBlock(): DeadpoolClaimChecks on %s failed with %s",
+                        tx.GetHash().ToString(), state.ToString());
+                    }
                 }
 
             }
