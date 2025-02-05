@@ -19,7 +19,7 @@ CAnnounceDB::CAnnounceDB(size_t nCacheSize, bool fMemory, bool fWipe) : CDBWrapp
 
 bool CAnnounceDB::AddAnnouncements(const std::vector<CLocdAnnouncement> &list) {
     CDBBatch batch(*this);
-    size_t count;
+    size_t count = 0;
 
     for (std::vector<CLocdAnnouncement>::const_iterator it=list.begin(); it != list.end(); it++) {
         const uint256 entry = it->announcement.NHash();
@@ -37,7 +37,7 @@ bool CAnnounceDB::AddAnnouncements(const std::vector<CLocdAnnouncement> &list) {
 
 bool CAnnounceDB::RemoveAnnouncements(const std::vector<CLocdAnnouncement> &list) {
     CDBBatch batch(*this);
-    size_t count;
+    size_t count = 0;
 
     for (std::vector<CLocdAnnouncement>::const_iterator it=list.begin(); it != list.end(); it++) {
         const uint256 entry = it->announcement.NHash();

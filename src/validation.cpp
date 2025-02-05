@@ -1116,7 +1116,10 @@ bool MemPoolAccept::DeadpoolClaimChecks(const ATMPArgs& args, Workspace& ws)
   }
 
   if (!DeadpoolClaimIsAnnounced(tx, m_view, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height, state)) {
-      DeadpoolRescanAnnouncements(m_active_chainstate.m_chain, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height);
+      // Try scanning for announcements again
+      int64_t rescanStartTime = GetTimeMicros();
+      int64_t announcementsFound = DeadpoolRescanAnnouncements(m_active_chainstate.m_chain, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height);
+      LogPrint(BCLog::BENCH, "      - Rescanned deadpool announcements (%i found in %d ms)\n", announcementsFound, MILLI * (GetTimeMicros() - rescanStartTime));
       if (!DeadpoolClaimIsAnnounced(tx, m_view, m_active_chainstate.m_announce_db.get(), chainparams.GetConsensus(), height, state)) {
           return false;
       }
